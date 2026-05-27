@@ -1,0 +1,13 @@
+# Governance generated reports and backups
+reports/
+backups/
+*.bak
+*.tmp
+
+# Keep all configuration and source files
+!config.yaml
+!gates.yaml
+!policies/
+!engine/
+!hooks/
+!templates/

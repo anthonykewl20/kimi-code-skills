@@ -1,0 +1,40 @@
+# config.toml.snippet
+# Append this to your ~/.kimi/config.toml
+# These hooks are installed by the kimi-code-skills installer
+
+# ============================================
+# KIMI CODE SKILLS — HOOKS CONFIGURATION
+# ============================================
+
+# Auto-format code after file edits (requires prettier installed)
+[[hooks]]
+event = "PostToolUse"
+matcher = "WriteFile|StrReplaceFile"
+command = """jq -r '.tool_input.file_path' | xargs -I {} sh -c 'if command -v prettier >/dev/null 2>&1; then prettier --write "{}" 2>/dev/null; fi'"""
+timeout = 30
+
+# Block dangerous git commands (push to main, force push, reset --hard, etc.)
+[[hooks]]
+event = "PreToolUse"
+matcher = "Shell"
+command = "~/.kimi/hooks/block-dangerous-git.sh"
+timeout = 10
+
+# Block accidental writes to .env files (secrets protection)
+[[hooks]]
+event = "PreToolUse"
+matcher = "WriteFile|StrReplaceFile"
+command = "~/.kimi/hooks/protect-env.sh"
+timeout = 10
+
+# Desktop notification when Kimi needs approval (macOS)
+[[hooks]]
+event = "Notification"
+matcher = "permission_prompt"
+command = """osascript -e 'display notification "Kimi needs your approval" with title "Kimi CLI"' 2>/dev/null || true"""
+
+# Verify uncommitted changes and test status before session ends
+[[hooks]]
+event = "Stop"
+command = "~/.kimi/hooks/check-complete.sh"
+timeout = 30

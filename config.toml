@@ -1,0 +1,121 @@
+default_model = "kimi-code/kimi-for-coding"
+default_thinking = true
+default_yolo = false
+skip_afk_prompt_injection = false
+default_plan_mode = true
+default_editor = ""
+theme = "dark"
+show_thinking_stream = true
+merge_all_available_skills = true
+extra_skill_dirs = []
+telemetry = true
+
+# ═══════════════════════════════════════════════════════════════════════════════
+# MANDATORY HARD MECHANICAL GATES
+# These hooks enforce anti-pattern prevention at the tool-use level.
+# Exit code 2 = block operation. Exit code 0 = allow.
+# ═══════════════════════════════════════════════════════════════════════════════
+
+[[hooks]]
+event = "PreToolUse"
+command = "bash \"$HOME/.kimi/hooks/protect-env.sh\""
+matcher = ""
+timeout = 5
+
+[[hooks]]
+event = "PreToolUse"
+command = "python3 $HOME/.kimi/hooks/gatekeeper.py"
+matcher = ""
+timeout = 10
+
+[[hooks]]
+event = "PostToolUse"
+command = "python3 $HOME/.kimi/hooks/gatekeeper.py"
+matcher = ""
+timeout = 10
+
+[[hooks]]
+event = "SessionEnd"
+command = "python3 $HOME/.kimi/hooks/gatekeeper.py"
+matcher = ""
+timeout = 5
+
+[[hooks]]
+event = "SessionEnd"
+command = "bash $HOME/.kimi/hooks/check-complete.sh"
+matcher = ""
+timeout = 30
+
+# ═══════════════════════════════════════════════════════════════════════════════
+# GOVERNANCE INFRASTRUCTURE (Kimi K2.6)
+# Deep scanning for race conditions, concurrency, idempotency, dead code.
+# Runs AFTER gatekeeper.py on file writes for defense-in-depth.
+# ═══════════════════════════════════════════════════════════════════════════════
+
+[governance]
+enabled = true
+config_path = "$HOME/.kimi/governance/config.yaml"
+
+[[hooks]]
+event = "PostToolUse"
+command = "node $HOME/.kimi/hooks/governance_post_write.js"
+matcher = ""
+timeout = 15
+
+[models."kimi-code/kimi-for-coding"]
+provider = "managed:kimi-code"
+model = "kimi-for-coding"
+max_context_size = 262144
+capabilities = ["thinking", "video_in", "image_in"]
+display_name = "Kimi-k2.6"
+
+[providers."managed:kimi-code"]
+type = "kimi"
+base_url = "https://api.kimi.com/coding/v1"
+api_key = ""
+
+[providers."managed:kimi-code".oauth]
+storage = "file"
+key = "oauth/kimi-code"
+
+[loop_control]
+max_steps_per_turn = 200
+max_retries_per_step = 3
+max_ralph_iterations = 0
+reserved_context_size = 50000
+compaction_trigger_ratio = 0.85
+
+[background]
+max_running_tasks = 4
+read_max_bytes = 30000
+notification_tail_lines = 20
+notification_tail_chars = 3000
+wait_poll_interval_ms = 500
+worker_heartbeat_interval_ms = 5000
+worker_stale_after_ms = 15000
+kill_grace_period_ms = 2000
+keep_alive_on_exit = false
+agent_task_timeout_s = 900
+print_wait_ceiling_s = 3600
+
+[notifications]
+claim_stale_after_ms = 15000
+
+[services.moonshot_search]
+base_url = "https://api.kimi.com/coding/v1/search"
+api_key = ""
+
+[services.moonshot_search.oauth]
+storage = "file"
+key = "oauth/kimi-code"
+
+[services.moonshot_fetch]
+base_url = "https://api.kimi.com/coding/v1/fetch"
+api_key = ""
+
+[services.moonshot_fetch.oauth]
+storage = "file"
+key = "oauth/kimi-code"
+
+[mcp.client]
+tool_call_timeout_ms = 60000

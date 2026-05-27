@@ -1,0 +1,65 @@
+governance:
+  version: "1.0.0"
+  enabled: true
+  fail_on_critical: true
+  fail_on_high: true
+  fail_on_medium: false
+  fail_on_low: false
+
+  # Execution triggers
+  triggers:
+    pre_generate: true
+    post_generate: true
+    pre_commit: true
+    on_save: true
+
+  # Auto-remediation
+  auto_fix:
+    race_insert_without_conflict: true
+    race_counter_read_modify_write: true
+    idempotency_add_key_column: true
+    dead_code_remove_unreachable: false
+    dead_code_remove_unused_imports: true
+
+  # What to scan
+  scan_paths:
+    include:
+      - "sources/"
+      - "xhr/"
+      - "api/"
+      - "assets/includes/"
+      - "nodejs/"
+      - "admin-panel/"
+      - "themes/"
+    exclude:
+      - "node_modules/"
+      - ".git/"
+      - "dist/"
+      - "build/"
+      - "upload/"
+      - "cache/"
+      - "ffmpeg/"
+      - ".kimi/governance/reports/"
+      - "e2e/"
+      - "admin-panel/vendors/"
+      - "**/vendors/"
+      - "assets/libraries/"
+    file_patterns:
+      - "*.php"
+      - "*.js"
+      - "*.ts"
+      - "*.sql"
+      - "*.tpl"
+
+  # Gate thresholds
+  thresholds:
+    max_critical: 0
+    max_high: 0
+    max_medium: 5
+    max_low: 20
+
+  # Reports
+  reports:
+    format: "markdown"
+    output_dir: ".kimi/governance/reports/"
+    keep_history: 10

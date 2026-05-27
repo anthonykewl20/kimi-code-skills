@@ -1,0 +1,275 @@
+gates:
+  # ═══════════════════════════════════════════════════════════════════════════════
+  # SCAN 1: RACE CONDITIONS (Critical Priority)
+  # ═══════════════════════════════════════════════════════════════════════════════
+
+  race_check_then_act:
+    description: "Check-then-Act without row locking"
+    severity: critical
+    action: block
+    auto_fix: true
+    patterns:
+      - name: "select_then_insert_no_lock"
+        match: "INSERT\\s+INTO\\s+\\w+\\s*[(][^)]*[)]\\s*VALUES(?![\\s\\S]{0,500}ON CONFLICT)(?![\\s\\S]{0,500}FOR UPDATE)(?![\\s\\S]{0,500}IGNORE)"
+        message: "Race condition: SELECT without FOR UPDATE followed by INSERT without ON CONFLICT"
+        fix_template: |
+          BEGIN;
+          SELECT * FROM {table} WHERE {condition} FOR UPDATE;
+          INSERT INTO {table} ({columns}) VALUES ({values}) ON CONFLICT DO NOTHING;
+          COMMIT;
+
+      - name: "read_modify_write_counter"
+        match: "UPDATE\\s+\\w+\\s+SET\\s+(wallet|balance|points)\\s*=\\s*[0-9\\$]"
+        message: "Race condition: Counter read-modify-write. Use atomic UPDATE"
+        fix_template: "UPDATE {table} SET {column} = {column} + ? WHERE {condition};"
+
+      - name: "php_read_modify_write"
+        match: "\\$user_data\\['\"](?:wallet|balance|points)['\"]\\][\\s\\S]{0,300}UPDATE\\s+\\w+\\s+SET"
+        message: "Race condition: PHP reads balance/wallet/points into variable then UPDATEs literal value"
+        fix_template: "UPDATE {table} SET {column} = {column} + ? WHERE user_id = ?"
+
+      - name: "unawaited_shared_mutation"
+        match: "let\\s+\\w+\\s*;[\\s\\S]{0,500}\\w+\\s*=\\s*await"
+        message: "Race condition: Shared variable mutated across concurrent async calls"
+        fix_template: "Use atomic operation or functional state update (return value instead of mutating outer scope)"
+
+  race_unprotected_mutation:
+    description: "Async state updates without synchronization"
+    severity: high
+    action: block
+    patterns:
+      - name: "concurrent_array_push"
+        match: "async\\s+function[\\s\\S]{0,500}\\.push[(][^)]*await"
+        message: "Race: Array.push after await — concurrent calls may interleave"
+        fix_template: "Compute value before await, push synchronously, or use atomic queue"
+
+      - name: "nodejs_unconditional_insert"
+        match: "wo_messages\\.create[(][^)]*[)]|wo_group_messages\\.create[(][^)]*[)]"
+        message: "Race: NodeJS unconditional DB insert without idempotency check"
+        fix_template: "Check message_hash_id before create; use findOrCreate with unique constraint"
+
+  # ═══════════════════════════════════════════════════════════════════════════════
+  # SCAN 2: CONCURRENCY & SCALE (High Priority)
+  # ═══════════════════════════════════════════════════════════════════════════════
+
+  scale_unbounded_query:
+    description: "Database queries without LIMIT"
+    severity: high
+    action: block
+    patterns:
+      - name: "select_without_limit"
+        match: "SELECT\\s+[\\*\\w,\\s]+FROM\\s+\\w+(?![\\s\\S]{0,500}LIMIT)(?![\\s\\S]{0,500}COUNT)"
+        message: "Scale risk: SELECT without LIMIT will slow linearly as data grows"
+        fix_template: "SELECT {columns} FROM {table} WHERE {condition} LIMIT {limit} OFFSET {offset}"
+
+      - name: "php_unbounded_followers"
+        match: "SELECT\\s+[\\w\\s,]*follower_id[\\w\\s,]*FROM\\s+T_FOLLOWERS(?![\\s\\S]{0,500}LIMIT)"
+        message: "Scale risk: Unbounded follower query — celebrity accounts will explode"
+        fix_template: "SELECT follower_id FROM T_FOLLOWERS WHERE following_id = ? ORDER BY id DESC LIMIT 5000"
+
+      - name: "php_unbounded_messages"
+        match: "SELECT\\s+[\\w\\s,*]+\\s+FROM\\s+T_MESSAGES\\s+WHERE\\s+to_id(?![\\s\\S]{0,500}LIMIT)"
+        message: "Scale risk: Unbounded message history query"
+        fix_template: "SELECT * FROM T_MESSAGES WHERE (to_id = ? AND from_id = ?) ORDER BY id DESC LIMIT 50"
+
+      - name: "for_loop_over_query"
+        match: "for\\s*[(]\\s*const\\s+\\w+\\s+of\\s+await[^)]*query[)]"
+        message: "Scale risk: Iterating unbounded query results in memory"
+        fix_template: "Use cursor-based pagination or batch processing with LIMIT/OFFSET"
+
+      - name: "php_n_plus_one"
+        match: "Wo_UserData\\s*[(]\\s*\\$"
+        message: "Scale risk: N+1 query pattern — hydrating user data inside a loop"
+        fix_template: "Use JOIN to fetch all user data in single query, or use IN() batch lookup"
+
+  scale_blocking_io:
+    description: "Blocking external I/O without timeout"
+    severity: critical
+    action: block
+    patterns:
+      - name: "file_get_contents_no_timeout"
+        match: "file_get_contents\\s*[(]\\s*\\$[^,)]*[)]"
+        message: "Scale risk: file_get_contents() without timeout context blocks PHP-FPM workers"
+        fix_template: |
+          $ctx = stream_context_create(['http' => ['timeout' => 5]]);
+          $data = file_get_contents($url, false, $ctx);
+
+      - name: "curl_exec_no_timeout"
+        match: "curl_exec\\s*[(]\\s*\\$[^)]+[)]"
+        message: "Scale risk: curl_exec() without CURLOPT_TIMEOUT can deadlock the app"
+        fix_template: |
+          curl_setopt($ch, CURLOPT_TIMEOUT, 5);
+          curl_setopt($ch, CURLOPT_CONNECTTIMEOUT, 3);
+
+      - name: "shell_exec_ffmpeg"
+        match: "shell_exec\\s*[(][^)]*ffmpeg"
+        message: "Scale risk: FFmpeg shell_exec in request handler exhausts workers"
+        fix_template: "Move FFmpeg to background queue (Redis/RabbitMQ). Return 202 Accepted immediately."
+
+      - name: "get_headers_no_timeout"
+        match: "get_headers\\s*[(]\\$"
+        message: "Scale risk: get_headers() with default socket timeout"
+        fix_template: "Use curl with CURLOPT_TIMEOUT instead of get_headers()"
+
+  scale_session_lock:
+    description: "Session file locks in AJAX endpoints"
+    severity: high
+    action: warn
+    patterns:
+      - name: "session_start_no_close_ajax"
+        match: "session_start\\s*[(]\\s*[)]"
+        message: "Scale risk: session_start() without session_write_close() in AJAX serializes requests"
+        fix_template: "Call session_write_close() immediately after reading session data in AJAX endpoints"
+
+  scale_missing_cleanup:
+    description: "Resources not released in error paths"
+    severity: high
+    action: warn
+    patterns:
+      - name: "connection_no_release"
+        match: "getConnection\\s*[(]"
+        message: "Scale risk: DB connection may leak on error path"
+        fix_template: "Wrap in try/finally: const conn = await pool.getConnection(); try { ... } finally { conn.release(); }"
+
+      - name: "setinterval_no_clear"
+        match: "setInterval\\s*[(]"
+        message: "Scale risk: setInterval without cleanup — memory leak under hot reload"
+        fix_template: "Store interval ID and clear in cleanup/teardown: const id = setInterval(...); cleanup.push(() => clearInterval(id));"
+
+      - name: "mysqli_no_close"
+        match: "mysqli_connect|new\\s+mysqli(?![\\s\\S]{0,500}mysqli_close)(?![\\s\\S]{0,500}register_shutdown_function)"
+        message: "Scale risk: mysqli connection not explicitly closed"
+        fix_template: "Add register_shutdown_function('mysqli_close') or use connection pooling"
+
+  scale_shared_mutable_state:
+    description: "Global/shared state that grows unbounded"
+    severity: medium
+    action: warn
+    patterns:
+      - name: "global_cache_no_eviction"
+        match: "const\\s+cache\\s*=\\s*new\\s+Map|new\\s+Map[(](?![\\s\\S]{0,500}delete)(?![\\s\\S]{0,500}size)"
+        message: "Scale risk: Map cache without eviction — grows unbounded with requests"
+        fix_template: "Use LRU cache with maxSize, or TTL-based eviction"
+
+      - name: "php_file_cache_no_lock"
+        match: "fopen\\s*[(]\\s*[^)]*['\"]a['\"][^)]*[)](?![\\s\\S]{0,500}flock)(?![\\s\\S]{0,500}LOCK_EX)"
+        message: "Scale risk: File cache append without flock — corrupts under concurrency"
+        fix_template: "Use file_put_contents(..., LOCK_EX) or switch to Redis/Memcached"
+
+  # ═══════════════════════════════════════════════════════════════════════════════
+  # SCAN 3: IDEMPOTENCY (High Priority)
+  # ═══════════════════════════════════════════════════════════════════════════════
+
+  idempotency_insert_no_conflict:
+    description: "INSERT without conflict handling"
+    severity: high
+    action: block
+    auto_fix: true
+    patterns:
+      - name: "bare_insert"
+        match: "INSERT\\s+INTO\\s+\\w+\\s*[(][^)]*[)]\\s*VALUES(?![\\s\\S]{0,500}ON CONFLICT)(?![\\s\\S]{0,500}IGNORE)(?![\\s\\S]{0,500}UPSERT)"
+        message: "Idempotency failure: INSERT without ON CONFLICT — retries create duplicates"
+        fix_template: |
+          INSERT INTO {table} (idempotency_key, {columns})
+          VALUES ({idempotency_key}, {values})
+          ON CONFLICT (idempotency_key) DO NOTHING
+          RETURNING *;
+
+      - name: "php_payment_callback_no_dedup"
+        match: "(coinpayments|stripe|2checkout|flutterwave|ngenius|securionpay|cashfree|paysera|paystack|fortumo|yoomoney|razorpay|authorize|braintree|coinbase|aamarpay)[\\s\\S]{0,200}INSERT\\s+INTO(?![\\s\\S]{0,500}txn_id)(?![\\s\\S]{0,500}payment_id)(?![\\s\\S]{0,500}already)"
+        message: "CRITICAL: Payment callback handler lacks transaction deduplication — replay = double credit"
+        fix_template: |
+          $db->where('txn_id', $txn_id);
+          if ($db->getOne(T_PAYMENT_TRANSACTIONS)) {
+              http_response_code(200);
+              exit('Already processed');
+          }
+
+      - name: "insert_no_unique_constraint"
+        match: "CREATE\\s+TABLE\\s+\\w+\\s*[(]"
+        message: "Idempotency: Table has no UNIQUE constraint beyond auto-increment — allows unlimited duplicates"
+        fix_template: "ALTER TABLE {table} ADD CONSTRAINT uq_{table}_{column} UNIQUE ({column});"
+
+  idempotency_retry_no_key:
+    description: "Retry logic without preserved idempotency key"
+    severity: critical
+    action: block
+    patterns:
+      - name: "retry_new_key_each_time"
+        match: "retry[\\s\\S]{0,300}(?:uuid|random)(?![\\s\\S]{0,500}same)(?![\\s\\S]{0,500}reuse)"
+        message: "Idempotency failure: Retry loop generates new key each attempt — defeats deduplication"
+        fix_template: "Generate idempotency_key ONCE before retry loop, reuse it across all attempts"
+
+  idempotency_webhook_no_dedup:
+    description: "Webhook handlers without deduplication"
+    severity: high
+    action: warn
+    patterns:
+      - name: "webhook_no_event_id_check"
+        match: "webhook|event\\s+handler(?![\\s\\S]{0,500}eventId)(?![\\s\\S]{0,500}idempotency)(?![\\s\\S]{0,500}dedup)"
+        message: "Idempotency: Webhook handler doesn't check for duplicate event IDs"
+        fix_template: |
+          const seen = new Set();
+          function handleWebhook(event) {
+            if (seen.has(event.id)) return { status: 'duplicate' };
+            seen.add(event.id);
+            // ... process event
+          }
+
+  idempotency_php_post_create:
+    description: "Non-idempotent post/message creation"
+    severity: high
+    action: warn
+    patterns:
+      - name: "php_post_no_idempotency"
+        match: "Wo_RegisterPost\\s*[(][^)]*[)](?![\\s\\S]{0,500}idempotency)(?![\\s\\S]{0,500}unique)"
+        message: "Idempotency: Post creation without idempotency key — network retry creates duplicates"
+        fix_template: "Accept client idempotency_key in T_POSTS with UNIQUE constraint; reject duplicates within 24h"
+
+      - name: "php_message_no_dedup"
+        match: "Wo_RegisterMessage\\s*[(][^)]*[)](?![\\s\\S]{0,500}hash)(?![\\s\\S]{0,500}dedup)(?![\\s\\S]{0,500}unique)"
+        message: "Idempotency: Message creation without deduplication"
+        fix_template: "Add message_hash_id UNIQUE constraint, or check (from_id, to_id, text, time) within 5s window"
+
+  # ═══════════════════════════════════════════════════════════════════════════════
+  # SCAN 4: DEAD CODE (Medium Priority)
+  # ═══════════════════════════════════════════════════════════════════════════════
+
+  dead_unreachable_code:
+    description: "Code after return/unreachable branches"
+    severity: low
+    action: warn
+    patterns:
+      - name: "code_after_return"
+        match: "return\\s+[^;]+;\\s*[^}\\s]"
+        message: "Dead code: Unreachable code after return statement"
+        fix_template: "Remove code after return or restructure control flow"
+
+      - name: "php_commented_function"
+        match: "^\\s*//\\s*function\\s+\\w+\\s*[(]"
+        message: "Dead code: Commented-out function signature"
+        fix_template: "Remove commented-out code or restore it"
+
+  dead_unused_exports:
+    description: "Exported symbols with zero imports"
+    severity: medium
+    action: warn
+    detection: "static-analysis"
+    note: "Run .kimi/governance/engine/scanner.js --scan dead-code for accurate detection"
+
+  dead_orphan_tests:
+    description: "Test files for removed modules"
+    severity: low
+    action: log
+    detection: "static-analysis"
+    note: "Flagged when test imports a module that no longer exists"
+
+  dead_php_unreachable_files:
+    description: "PHP source files with no known router reference"
+    severity: low
+    action: log
+    patterns:
+      - name: "php_file_no_reference"
+        match: "sources/[^/]+\\.php"
+        message: "Potentially unreachable source file (dynamic routing makes this uncertain)"
+        fix_template: "Verify against live routing table or .htaccess before deleting"

@@ -1,0 +1,42 @@
+# ── Secrets & Credentials ──
+credentials/
+
+# ── Personal / Machine-Specific Config ──
+device_id
+kimi.json
+mcp.json
+config.json
+config.json.bak
+config.toml.bak
+
+# ── Session Data & Logs ──
+logs/
+telemetry/
+user-history/
+sessions/
+.gatekeeper/
+plans/
+
+# ── Auto-Generated Skill Learnings (contain local paths) ──
+**/learnings.md
+
+# ── OS artifacts ──
+*.Zone.Identifier
+*.DS_Store
+Thumbs.db
+
+# ── General backups ──
+*.bak
+*~
+
+# ── Python cache ──
+__pycache__/
+*.pyc
+*.pyo
+
+# ── Windows alternate data streams ──
+*Zone.Identifier
+
+# ── Runtime / generated data ──
+.kimi/
+latest_version.txt
